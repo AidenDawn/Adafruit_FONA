@@ -137,7 +137,7 @@ public:
   bool enableGPRS(bool onoff);
   uint8_t GPRSstate(void);
   bool getGSMLoc(uint16_t *replycode, char *buff, uint16_t maxlen);
-  bool getGSMLoc(float *lat, float *lon);
+  bool getGSMLoc(float*lat, float *lon, float *date = 0, float *GSMtime = 0);
   void setGPRSNetworkSettings(FONAFlashStringPtr apn,
                               FONAFlashStringPtr username = 0,
                               FONAFlashStringPtr password = 0);
@@ -145,10 +145,13 @@ public:
   // GPS handling
   bool enableGPS(bool onoff);
   int8_t GPSstatus(void);
+  bool getGPS();
   uint8_t getGPS(uint8_t arg, char *buffer, uint8_t maxbuff);
   bool getGPS(float *lat, float *lon, float *speed_kph = 0, float *heading = 0,
-              float *altitude = 0);
+              float *altitude = 0, float *date = 0);
   bool enableGPSNMEA(uint8_t enable_value);
+  int32_t parseDecimal(const char *term);
+  void getTime(uint32_t time);
 
   // TCP raw connections
   bool TCPconnect(char *server, uint16_t port);
@@ -194,6 +197,7 @@ public:
   bool pickUp(void);
   bool callerIdNotification(bool enable, uint8_t interrupt = 0);
   bool incomingCallNumber(char *phonenum);
+  volatile static bool _incomingCall; ///< Incoming call state var (ISR compatible)
 
   // Helper functions to verify responses.
   bool expectReply(FONAFlashStringPtr reply, uint16_t timeout = 10000);
@@ -203,6 +207,34 @@ public:
                       uint16_t timeout = FONA_DEFAULT_TIMEOUT_MS);
   bool sendCheckReply(char *send, FONAFlashStringPtr reply,
                       uint16_t timeout = FONA_DEFAULT_TIMEOUT_MS);
+
+public:
+  struct gspdata{
+		uint16_t year;
+		uint8_t month;
+		uint8_t day;
+    char date[10];
+		uint8_t hour;
+		uint8_t minute;
+		uint8_t second;
+		uint8_t centisecond;
+		float lat;
+		float lon;
+		float speed_kph;
+		float heading;
+		float altitude;
+	} GPSdata;
+
+  struct gspstatus {
+      uint8_t status;
+      uint8_t sat_in_view;
+      uint8_t sat_used;
+      uint8_t sat_glonass;
+      //<HDOP>,<PDOP>, <VDOP>
+      float horizontal_pres;
+      float position_pres;
+      float vertical_pres;
+  } GPSStatus;
 
 protected:
   int8_t _rstpin; ///< Reset pin
@@ -259,7 +291,7 @@ protected:
   bool sendParseReply(FONAFlashStringPtr tosend, FONAFlashStringPtr toreply,
                       uint16_t *v, char divider = ',', uint8_t index = 0);
 
-  static bool _incomingCall; ///< Incoming call state var
+
   static void onIncomingCall();
 
   FONAStreamType *mySerial; ///< Serial connection

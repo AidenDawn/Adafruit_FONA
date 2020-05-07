@@ -61,11 +61,15 @@ bool Adafruit_FONA::begin(Stream &port) {
   mySerial = &port;
 
   pinMode(_rstpin, OUTPUT);
-  digitalWrite(_rstpin, HIGH);
-  delay(10);
-  digitalWrite(_rstpin, LOW);
-  delay(100);
-  digitalWrite(_rstpin, HIGH);
+  while (mySerial->available())
+    mySerial->read();
+  if (!sendCheckReply(F("AT"), ok_reply)){
+    digitalWrite(_rstpin, HIGH);
+    delay(10);
+    digitalWrite(_rstpin, LOW);
+    delay(100);
+    digitalWrite(_rstpin, HIGH);
+  }
 
   DEBUG_PRINTLN(F("Attempting to open comm with ATs"));
   // give 7 seconds to reboot
@@ -662,11 +666,15 @@ bool Adafruit_FONA::_incomingCall = false;
  */
 bool Adafruit_FONA::callerIdNotification(bool enable, uint8_t interrupt) {
   if (enable) {
+#ifdef FONA_CALL_INTERRUPT
     attachInterrupt(interrupt, onIncomingCall, FALLING);
+#endif
     return sendCheckReply(F("AT+CLIP=1"), ok_reply);
   }
 
+#ifdef FONA_CALL_INTERRUPT
   detachInterrupt(interrupt);
+#endif
   return sendCheckReply(F("AT+CLIP=0"), ok_reply);
 }
 
@@ -747,7 +755,7 @@ int8_t Adafruit_FONA::getNumSMS(void) {
 }
 
 // Reading SMS's is a bit involved so we don't use helpers that may cause delays
-// or debug printouts!
+// or DEBUG printouts!
 
 /**
  * @brief Read an SMS message into a provided buffer
@@ -774,7 +782,7 @@ bool Adafruit_FONA::readSMS(uint8_t message_index, char *smsbuff,
   DEBUG_PRINT(F("AT+CMGR="));
   DEBUG_PRINTLN(message_index);
 
-  // getReply(F("AT+CMGR="), message_index, 1000);  //  do not print debug!
+  // getReply(F("AT+CMGR="), message_index, 1000);  //  do not print DEBUG!
   mySerial->print(F("AT+CMGR="));
   mySerial->println(message_index);
   readline(1000); // timeout
@@ -1206,6 +1214,101 @@ uint8_t Adafruit_FONA::getGPS(uint8_t arg, char *buffer, uint8_t maxbuff) {
   return len;
 }
 
+bool Adafruit_FONA::getGPS(){
+
+  char gpsbuffer[120];
+
+  // we need at least a 2D fix
+  if (GPSstatus() < 2)
+    return false;
+
+  // grab the mode 2^5 gps csv from the sim808
+  uint8_t res_len = getGPS(32, gpsbuffer, 120);
+
+  // make sure we have a response
+  if (res_len == 0)
+    return false;
+
+  if (_type == FONA808_V2) {
+    char *tok = strtok(gpsbuffer, ",");    
+    if (! tok) return false;
+
+    char *status = strtok(NULL, ",");    
+    if (! status) return false;
+    
+    
+
+    char *datetime =  strtok(NULL, ",");    
+    if (! datetime) return false;
+    char date[5];
+    memset(date,0,strlen(date));
+    strncpy(date, datetime, 4);
+    GPSdata.year =  atoi(date);	
+    memset(date,0,strlen(date));
+    strncpy(date, datetime+4, 2);
+	  GPSdata.month =  atoi(date);	 
+    memset(date,0,strlen(date));
+    strncpy(date, datetime+6, 2);
+    GPSdata.day =  atoi(date);
+    sprintf(GPSdata.date, "%d/%d/%d", GPSdata.year, GPSdata.month, GPSdata.day);
+
+	  uint32_t newTime = (uint32_t)parseDecimal(datetime + 8);
+	  getTime(newTime);
+
+    char *lat =  strtok(NULL, ",");    
+    if (! lat) return false;
+    GPSdata.lat = atof(lat);
+
+    char *lon =  strtok(NULL, ",");    
+    if (! lon) return false;
+    GPSdata.lon = atof(lon);
+
+    char *alt =  strtok(NULL, ",");    
+    if (! alt) return false;
+    GPSdata.altitude = atof(alt);
+
+    char *speed =  strtok(NULL, ",");    
+    if (! speed) return false;
+    GPSdata.speed_kph = atof(speed)* 1.852;
+
+    char *heading =  strtok(NULL, ",");    
+    if (! heading) return false;
+    GPSdata.heading = atof(heading);
+
+    // skip
+    strtok(NULL, ",");   strtok(NULL, ",");   
+    
+    char *hdop =  strtok(NULL, ",");
+    if (! hdop) return false;
+    GPSStatus.horizontal_pres = atof(hdop);
+
+    char *pdop =  strtok(NULL, ",");
+    if (! pdop) return false;
+    GPSStatus.position_pres = atof(pdop);
+    
+    char *vdop =  strtok(NULL, ",");
+    if (! vdop) return false;
+    GPSStatus.vertical_pres = atof(vdop);
+
+    // skip
+    strtok(NULL, ",");
+
+    char *sat_in_view =  strtok(NULL, ",");
+    if (! sat_in_view) return false;
+    GPSStatus.sat_in_view = atoi(sat_in_view);
+     
+    char *sat_used =  strtok(NULL, ",");
+    if (! sat_used) return false;
+    GPSStatus.sat_used = atoi(sat_used);
+     
+    char *sat_glonass =  strtok(NULL, ",");
+    if (! sat_glonass) return false;
+    GPSStatus.sat_glonass = atof(sat_glonass);
+  }
+   
+  return true;
+}
+
 /**
  * @brief Get a GPS reading
  *
@@ -1218,7 +1321,7 @@ uint8_t Adafruit_FONA::getGPS(uint8_t arg, char *buffer, uint8_t maxbuff) {
  * @return true: success, false: failure
  */
 bool Adafruit_FONA::getGPS(float *lat, float *lon, float *speed_kph,
-                           float *heading, float *altitude) {
+                           float *heading, float *altitude, float *date) {
 
   char gpsbuffer[120];
 
@@ -1335,10 +1438,19 @@ bool Adafruit_FONA::getGPS(float *lat, float *lon, float *speed_kph,
       return false;
 
     // skip date
-    tok = strtok(NULL, ",");
-    if (!tok)
-      return false;
+    // only grab date if needed
+    if (date != NULL) {
+      // grab date
+      char *datep = strtok(NULL, ",");
+      if (!datep)
+        return false;
 
+      *date = atof(datep);
+    } else {
+      tok = strtok(NULL, ",");
+      if (!tok)
+        return false;
+    }
     // grab the latitude
     char *latp = strtok(NULL, ",");
     if (!latp)
@@ -1541,6 +1653,27 @@ bool Adafruit_FONA::enableGPSNMEA(uint8_t enable_value) {
   } else {
     return sendCheckReply(sendbuff, ok_reply, 2000);
   }
+}
+
+int32_t Adafruit_FONA::parseDecimal(const char *term) {
+  bool negative = *term == '-';
+  if (negative) ++term;
+  int32_t ret = 100 * (int32_t)atol(term);
+  while (isdigit(*term)) ++term;
+  if (*term == '.' && isdigit(term[1]))
+  {
+    ret += 10 * (term[1] - '0');
+    if (isdigit(term[2]))
+      ret += term[2] - '0';
+  }
+  return negative ? -ret : ret;
+}
+
+void Adafruit_FONA::getTime(uint32_t time){
+	GPSdata.hour     =  time / 1000000;
+	GPSdata.minute  = (time / 10000) % 100;
+	GPSdata.second = (time / 100) % 100;
+	GPSdata.centisecond =  time % 100;
 }
 
 /********* GPRS **********************************************************/
@@ -1754,9 +1887,11 @@ void Adafruit_FONA::setGPRSNetworkSettings(FONAFlashStringPtr apn,
 bool Adafruit_FONA::getGSMLoc(uint16_t *errorcode, char *buff,
                               uint16_t maxlen) {
 
-  getReply(F("AT+CIPGSMLOC=1,1"), (uint16_t)10000);
+  flushInput();
 
-  if (!parseReply(F("+CIPGSMLOC: "), errorcode))
+  getReply(F("AT+CLBS=4,1"), (uint16_t)5000);
+
+  if (!parseReply(F("+CLBS: "), errorcode))
     return false;
 
   char *p = replybuffer + 14;
@@ -1775,7 +1910,7 @@ bool Adafruit_FONA::getGSMLoc(uint16_t *errorcode, char *buff,
  * @param lon Pointer to a buffer to hold the longitude
  * @return true: success, false: failure
  */
-bool Adafruit_FONA::getGSMLoc(float *lat, float *lon) {
+bool Adafruit_FONA::getGSMLoc(float *lat, float *lon, float *date, float *GSMtime) {
 
   uint16_t returncode;
   char gpsbuffer[120];
@@ -1791,15 +1926,37 @@ bool Adafruit_FONA::getGSMLoc(float *lat, float *lon) {
   // +CIPGSMLOC: 0,-74.007729,40.730160,2015/10/15,19:24:55
   // tokenize the gps buffer to locate the lat & long
   char *longp = strtok(gpsbuffer, ",");
-  if (!longp)
+  Serial.println(longp);
+  if (!lon)
     return false;
+  *lon = atof(longp);
 
   char *latp = strtok(NULL, ",");
-  if (!latp)
+  
+  Serial.println(latp);
+  if (!lat)
     return false;
-
   *lat = atof(latp);
-  *lon = atof(longp);
+
+  // only grab date if needed
+  if (date != NULL) {
+    // grab date
+    char *datep = strtok(NULL, ",");
+    if (!datep)
+      return false;
+    *date = atof(datep);
+  }
+  
+  // only grab time if needed
+  if (GSMtime != NULL) {
+    // grab time
+    char *GSMtimep = strtok(NULL, ",");
+    if (!GSMtimep)
+      return false;
+    *GSMtime = atof(GSMtimep);
+  }
+  //*lat = atof(latp);
+  //*lon = atof(longp);
 
   return true;
 }
@@ -2018,7 +2175,7 @@ bool Adafruit_FONA::HTTP_para_end(bool quoted) {
 }
 
 /**
- * @brief Send HTTP parameter
+ * @brief Send HTTP parameter, 
  *
  * @param parameter Pointer to a buffer with the parameter to send
  * @param value Pointer to a buffer with the parameter value
